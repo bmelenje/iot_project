@@ -2,6 +2,7 @@ package edu.unicauca.iot.data.network
 
 import edu.unicauca.iot.data.model.Actuador
 import edu.unicauca.iot.data.model.ActuadorResponse
+import edu.unicauca.iot.model.Sensor
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.*
@@ -37,4 +38,7 @@ interface ApiService {
         @Field("id") id: Int,
         @Field("valor") valor: Float
     ): Response<ResponseBody>
+
+    @GET("get_sensor.php")
+    suspend fun getSensorValue(@Query("nombre") nombre: String): Response<Sensor>
 }
