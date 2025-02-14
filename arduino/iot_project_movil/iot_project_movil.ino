@@ -1,108 +1,205 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <ArduinoJson.h> // Librería para manejar JSON
+#include <ArduinoJson.h>
+#include <DHT.h>
 
-// Configuración de la red Wi-Fi
-const char* ssid = "Matias0421"; 
-const char* password = "Esteban1223";
+// 📡 Configuración de la red Wi-Fi
+const char* ssid = "SISE"; 
+const char* password = "Fulvineitor23";
 
-// URLs de la API
-const char* serverActuador = "http://192.168.18.170/api_iot/get_actuador.php";  // Endpoint para obtener el estado del actuador
-const char* serverSensor = "http://192.168.18.170/api_iot/update_sensor.php";  // Endpoint para enviar la temperatura
+// 🌍 URLs de la API
+const char* serverActuador = "http://192.168.0.114/api_iot/get_actuador.php";  
+const char* serverSensor = "http://192.168.0.114/api_iot/update_sensor.php";
+const char* serverUpdateActuador = "http://192.168.0.114/api_iot/update_actuador.php";  
 
-// Pines de hardware
-const int ledPin = 27;  // LED en el pin D27
-const int sensorPin = 34; // Sensor de temperatura en el pin A34 (ajústalo según tu hardware)
+// ⚡ Pines de hardware
+#define SensorPin       34  // Sensor de humedad
+#define DHTPin          14  // DHT11
+#define RelayPin        23  // Bomba de agua
+#define wifiLed         2   // LED indicador de WiFi
+#define RelayButtonPin  32  // Botón para activar la bomba manualmente
+#define ModeSwitchPin   33  // Botón para cambiar modo
+#define BuzzerPin       26  // Buzzer
+#define ModeLed         15  // LED indicador de modo
+
+// Configuración del sensor DHT11
+#define DHTTYPE DHT11
+DHT dht(DHTPin, DHTTYPE);
+
+// Variables de estado
+bool modoAutomatico = true;
+bool bombaEncendida = false;
+bool buzzerEncendido = false;
+int humedadSuelo = 0;
+int temperatura = 0;
+int humedadAire = 0;
+const int humedadUmbral = 30; // 🌱 Umbral de humedad para activar la bomba automáticamente
 
 void setup() {
     Serial.begin(115200);
-    
-    // Configurar pines
-    pinMode(ledPin, OUTPUT);
-    digitalWrite(ledPin, LOW); 
 
-    // Conectar a la red WiFi
+    // 🔹 Configurar pines
+    pinMode(RelayPin, OUTPUT);
+    pinMode(wifiLed, OUTPUT);
+    pinMode(ModeLed, OUTPUT);
+    pinMode(BuzzerPin, OUTPUT);
+    pinMode(RelayButtonPin, INPUT_PULLUP);
+    pinMode(ModeSwitchPin, INPUT_PULLUP);
+
+    digitalWrite(RelayPin, LOW);
+    digitalWrite(wifiLed, LOW);
+    digitalWrite(ModeLed, LOW);
+    digitalWrite(BuzzerPin, LOW);
+
+    // 🔹 Iniciar el sensor DHT11
+    dht.begin();
+
+    // 🔹 Conectar a la red WiFi
     WiFi.begin(ssid, password);
-    Serial.print("Conectando a WiFi");
+    Serial.print("Conectando a WiFi...");
     while (WiFi.status() != WL_CONNECTED) {
         delay(1000);
         Serial.print(".");
     }
-    Serial.println("\nConectado a WiFi");
+    Serial.println("\n✅ Conectado a WiFi");
+    digitalWrite(wifiLed, HIGH);
 }
 
 void loop() {
     if (WiFi.status() == WL_CONNECTED) {
-        // 1. Obtener el estado del actuador (bomba)
-        HTTPClient http;
-        http.begin(serverActuador);
-        int httpResponseCode = http.GET();
+        // 🔹 Obtener estado del actuador "modo"
+        String modoEstado = obtenerEstadoActuador("modo");
+        bool nuevoModoAutomatico = (modoEstado == "ON");
 
-        if (httpResponseCode > 0) {
-            String payload = http.getString();
-            Serial.println("Respuesta del servidor: " + payload);
-
-            StaticJsonDocument<200> jsonDocument;
-            DeserializationError error = deserializeJson(jsonDocument, payload);
-
-            if (!error) {
-                const char* estado = jsonDocument["estado"]; 
-                Serial.print("Estado del actuador: ");
-                Serial.println(estado);
-
-                if (strcmp(estado, "OFF") == 0) {
-                    digitalWrite(ledPin, HIGH);
-                    Serial.println("LED encendido");
-                } else if (strcmp(estado, "ON") == 0) {
-                    digitalWrite(ledPin, LOW);
-                    Serial.println("LED apagado");
-                }
-            } else {
-                Serial.println("Error al parsear JSON");
-            }
-        } else {
-            Serial.print("Error en la solicitud: ");
-            Serial.println(httpResponseCode);
+        // 🔹 Si el estado ha cambiado, activar el buzzer (como en Blynk)
+        if (nuevoModoAutomatico != modoAutomatico) {
+            modoAutomatico = nuevoModoAutomatico;
+            Serial.println("🔄 Cambio de modo detectado: " + modoEstado);
+            activarBuzzer();
         }
-        http.end();
 
-        // 2. Leer sensor y enviar datos a la API
-        int sensorValue = analogRead(sensorPin);
-        float temperatura = sensorValue * (3.3 / 4095.0) * 100;  // Ajusta la fórmula según tu sensor
+        digitalWrite(ModeLed, modoAutomatico ? HIGH : LOW);
 
-        Serial.print("Temperatura medida: ");
-        Serial.println(temperatura);
+        // 🔹 Obtener estado de la bomba
+        bombaEncendida = obtenerEstadoActuador("bomba") == "ON";
 
-        HTTPClient http2;
-        http2.begin(serverSensor);
-        http2.addHeader("Content-Type", "application/json"); 
+        // 🔹 Obtener estado del buzzer
+        buzzerEncendido = obtenerEstadoActuador("buzzer") == "ON";
+        digitalWrite(BuzzerPin, buzzerEncendido ? HIGH : LOW);
 
-        // Crear JSON con la temperatura
-        StaticJsonDocument<200> jsonDoc;
-        jsonDoc["sensor"] = "temperatura";
-        jsonDoc["valor"] = temperatura;
+        // 🔹 Leer datos del sensor DHT11
+        temperatura = (int) dht.readTemperature();
+        humedadAire = (int) dht.readHumidity();
+
+        // 🔹 Leer sensor de humedad del suelo
+        humedadSuelo = map(analogRead(SensorPin), 3000, 930, 0, 100);
         
-        String jsonData;
-        serializeJson(jsonDoc, jsonData);
+        Serial.print("🌡 Temp: "); Serial.print(temperatura); Serial.print("°C  ");
+        Serial.print("💧 Humedad: "); Serial.print(humedadAire); Serial.print("%  ");
+        Serial.print("🌱 Suelo: "); Serial.print(humedadSuelo); Serial.println("%");
 
-        Serial.print("JSON enviado: ");
-        Serial.println(jsonData); // 👀 Esto nos ayuda a ver qué está enviando realmente el ESP32
+        // 🔹 Enviar datos a la API
+        enviarDatosSensor("temperatura", temperatura);
+        enviarDatosSensor("humedad", humedadAire);
+        enviarDatosSensor("suelo", humedadSuelo);
 
-        int httpPostResponse = http2.POST(jsonData);
-
-        if (httpPostResponse > 0) {
-            Serial.print("Respuesta del servidor: ");
-            Serial.println(http2.getString());
-        } else {
-            Serial.print("Error al enviar temperatura: ");
-            Serial.println(httpPostResponse);
+        // 🔹 Control automático de la bomba de agua
+        if (modoAutomatico) {
+            if (humedadSuelo < humedadUmbral && !bombaEncendida) {
+                activarActuador("bomba", "ON");
+                bombaEncendida = true;
+            } else if (humedadSuelo >= humedadUmbral && bombaEncendida) {
+                activarActuador("bomba", "OFF");
+                bombaEncendida = false;
+            }
         }
 
-        http2.end();
+        // 🔹 Verificar botones físicos
+        if (digitalRead(ModeSwitchPin) == LOW) {
+            cambiarModo();
+            delay(500);
+        }
+        if (digitalRead(RelayButtonPin) == LOW && !modoAutomatico) {
+            bombaEncendida = !bombaEncendida;
+            activarActuador("bomba", bombaEncendida ? "ON" : "OFF");
+            delay(500);
+        }
     } else {
-        Serial.println("WiFi desconectado, intentando reconectar...");
+        Serial.println("⚠ WiFi desconectado, intentando reconectar...");
         WiFi.begin(ssid, password);
     }
 
-    delay(1000); // Ejecutar cada 5 segundos
+    delay(500); // Esperar 3 segundos
+}
+
+// 🔹 Función para obtener estado de un actuador desde la API
+String obtenerEstadoActuador(const char* nombre) {
+    HTTPClient http;
+    http.begin(String(serverActuador) + "?nombre=" + nombre);
+    int httpResponseCode = http.GET();
+    String estado = "OFF";
+
+    if (httpResponseCode > 0) {
+        String payload = http.getString();
+        Serial.println("📥 Respuesta: " + payload);
+
+        StaticJsonDocument<200> jsonDocument;
+        DeserializationError error = deserializeJson(jsonDocument, payload);
+        if (!error) {
+            estado = jsonDocument["estado"].as<String>();
+        }
+    }
+    http.end();
+    return estado;
+}
+
+// 🔹 Función para enviar datos de sensores a la API
+void enviarDatosSensor(const char* sensor, int valor) {
+    HTTPClient http;
+    http.begin(serverSensor);
+    http.addHeader("Content-Type", "application/json");
+
+    StaticJsonDocument<200> jsonDoc;
+    jsonDoc["sensor"] = sensor;
+    jsonDoc["valor"] = valor;
+
+    String jsonData;
+    serializeJson(jsonDoc, jsonData);
+    int httpPostResponse = http.POST(jsonData);
+    
+    Serial.print("📤 Enviado: "); Serial.println(jsonData);
+    if (httpPostResponse > 0) {
+        Serial.println("📥 Respuesta API: " + http.getString());
+    }
+    http.end();
+}
+
+// 🔹 Función para activar/desactivar actuador desde la API
+void activarActuador(const char* nombre, const char* estado) {
+    HTTPClient http;
+    http.begin(serverUpdateActuador);
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+    String postData = "nombre=" + String(nombre) + "&estado=" + String(estado);
+    int httpPostResponse = http.POST(postData);
+    
+    Serial.print("📤 Cambiando estado de "); Serial.print(nombre); Serial.print(" a "); Serial.println(estado);
+    if (httpPostResponse > 0) {
+        Serial.println("📥 Respuesta API: " + http.getString());
+    }
+    http.end();
+}
+
+// 🔹 Función para cambiar el modo y activar el buzzer
+void cambiarModo() {
+    modoAutomatico = !modoAutomatico;
+    activarActuador("modo", modoAutomatico ? "ON" : "OFF");
+    activarBuzzer();
+}
+
+// 🔹 Función para activar el buzzer (como en Blynk)
+void activarBuzzer() {
+    digitalWrite(BuzzerPin, HIGH);
+    delay(500);
+    digitalWrite(BuzzerPin, LOW);
 }
